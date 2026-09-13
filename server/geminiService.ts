@@ -21,6 +21,110 @@ function getGenAI(): GoogleGenAI {
   return aiClient;
 }
 
+
+const DEFAULT_GEMINI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.5-flash',
+];
+
+const RETRYABLE_GEMINI_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS_PER_MODEL = 2;
+const BASE_RETRY_DELAY_MS = 800;
+
+function getGeminiModelCandidates(): string[] {
+  const primaryModel = process.env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODELS[0];
+  const configuredFallbacks = process.env.GEMINI_FALLBACK_MODELS
+    ?.split(',')
+    .map((model) => model.trim())
+    .filter(Boolean);
+
+  const fallbackModels =
+    configuredFallbacks && configuredFallbacks.length > 0
+      ? configuredFallbacks
+      : DEFAULT_GEMINI_MODELS.slice(1);
+
+  return [...new Set([primaryModel, ...fallbackModels])];
+}
+
+function getGeminiErrorStatus(error: any): number | undefined {
+  if (typeof error?.status === 'number') {
+    return error.status;
+  }
+
+  if (typeof error?.code === 'number') {
+    return error.code;
+  }
+
+  const message = String(error?.message || '');
+  const codeMatch = message.match(/"code"\s*:\s*(\d{3})/);
+  return codeMatch ? Number(codeMatch[1]) : undefined;
+}
+
+function isRetryableGeminiError(error: any): boolean {
+  const status = getGeminiErrorStatus(error);
+  if (status && RETRYABLE_GEMINI_STATUS_CODES.has(status)) {
+    return true;
+  }
+
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    message.includes('high demand') ||
+    message.includes('temporarily unavailable') ||
+    message.includes('unavailable') ||
+    message.includes('resource_exhausted') ||
+    message.includes('rate limit')
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function generateContentWithResilience(ai: GoogleGenAI, request: any) {
+  const models = getGeminiModelCandidates();
+  let lastError: any;
+
+  for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+    const model = models[modelIndex];
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt += 1) {
+      try {
+        return await ai.models.generateContent({
+          ...request,
+          model,
+        });
+      } catch (error: any) {
+        lastError = error;
+
+        if (!isRetryableGeminiError(error)) {
+          throw error;
+        }
+
+        const status = getGeminiErrorStatus(error);
+        console.warn(
+          `[Gemini] ${model} attempt ${attempt}/${MAX_ATTEMPTS_PER_MODEL} failed${status ? ` (HTTP ${status})` : ''}.`
+        );
+
+        if (attempt < MAX_ATTEMPTS_PER_MODEL) {
+          await sleep(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1));
+        }
+      }
+    }
+
+    if (modelIndex < models.length - 1) {
+      console.warn(`[Gemini] Falling back from ${model} to ${models[modelIndex + 1]}.`);
+    }
+  }
+
+  const status = getGeminiErrorStatus(lastError) || 503;
+  const friendlyError: any = new Error(
+    'Gemini is temporarily busy after automatic retries and fallback attempts. Please try again in a minute.'
+  );
+  friendlyError.status = status;
+  throw friendlyError;
+}
+
 export async function analyzeTemplateWithGemini(
   text: string,
   html: string,
@@ -58,7 +162,7 @@ Identify:
 6. For any tables found, extract column headers and sample row structure.
 `;
 
-  const response = await ai.models.generateContent({
+  const response = await generateContentWithResilience(ai, {
     model: 'gemini-3.8-flash',
     contents: prompt,
     config: {
@@ -195,7 +299,7 @@ INSTRUCTIONS FOR SYNTHESIS:
 9. Provide "diffHighlights" listing each major field/section populated, what source input was used, and the action taken.
 `;
 
-  const response = await ai.models.generateContent({
+  const response = await generateContentWithResilience(ai, {
     model: 'gemini-3.8-flash',
     contents: prompt,
     config: {

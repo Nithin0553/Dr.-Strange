@@ -8,6 +8,12 @@ import { analyzeTemplateWithGemini, populateDocumentWithGemini } from './server/
 import { generateDocxBuffer } from './server/docxGenerator.js';
 import { PopulatedDocument, TemplateAnalysis } from './src/types.js';
 
+
+function getErrorHttpStatus(error: any): number {
+  const status = Number(error?.status);
+  return Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -22,6 +28,7 @@ async function startServer() {
       status: 'ok',
       timestamp: new Date().toISOString(),
       hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
+      geminiModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
     });
   });
 
@@ -115,7 +122,7 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error('Error analyzing template:', err);
-      res.status(500).json({
+      res.status(getErrorHttpStatus(err)).json({
         error: err.message || 'Failed to analyze template document',
       });
     }
@@ -148,7 +155,7 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error('Error generating populated document:', err);
-      res.status(500).json({
+      res.status(getErrorHttpStatus(err)).json({
         error: err.message || 'Failed to populate document with provided content',
       });
     }
