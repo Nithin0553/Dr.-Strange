@@ -1,0 +1,7 @@
+{
+  "name": "DocuMorph AI - Template Word Document Populator",
+  "description": "Analyze any Word document template, memorize its formatting and styling, and populate it with content in any form while preserving the original layout, with interactive preview and docx export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
